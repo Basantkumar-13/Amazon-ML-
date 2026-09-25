@@ -1,0 +1,37 @@
+# Dataset
+dataset/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Submission outputs and cached artifacts
+output/*.tsv
+*.zip
+*.pkl
+*.joblib
+*.parquet
+*.feather
+.cache/
+!output/.gitkeep
