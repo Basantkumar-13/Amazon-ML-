@@ -1,11 +1,13 @@
 import sys
 import argparse
 import gc
+import math
+import regex as re
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
-from collections import defaultdict, Counter
+from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -14,13 +16,8 @@ from src.data.loader import clean_text
 from src.features.similarity import compute_features
 from src.models.matcher import MatcherModel
 
-# Common entity designators and noise words that do not provide discriminative blocking signal
-STOP_WORDS = {
-    'limited', 'private', 'llc', 'inc', 'ltd', 'pvt', 'corp', 'corporation',
-    'company', 'co', 'llp', 'and', 'of', 'in', 'the', 'for', 'to', 'at', 'a', 'an',
-    'sa', 'sarl', 'sas', 'gmbh', 'services', 'group', 'holdings', 'enterprises',
-    'solutions', 'center', 'centre', 'care', 'health'
-}
+# Only strip purely grammatical function words; keep all business terms
+STOP_WORDS = {'and', 'of', 'in', 'the', 'for', 'to', 'at', 'a', 'an'}
 
 
 def parse_args():
@@ -28,14 +25,17 @@ def parse_args():
     parser.add_argument('--test-dir', type=str, default=str(TEST_DIR))
     parser.add_argument('--output-dir', type=str, default=str(OUTPUT_DIR))
     parser.add_argument('--model-path', type=str, default=None)
-    parser.add_argument('--max-candidates', type=int, default=15)
+    parser.add_argument('--max-candidates', type=int, default=20)
     return parser.parse_args()
 
 
 def load_country_s2s3(test_dir, country_target):
-    """Load S2 and S3 entities belonging to a specific country."""
+    """Load S2 and S3 entities and build multi-stage inverted indices for that country."""
     data = {}
-    token_index = defaultdict(list)
+    name_idx = defaultdict(list)
+    prefix_idx = defaultdict(list)
+    addr_num_idx = defaultdict(list)
+    
     target_lower = country_target.strip().lower()
     
     for fname in ['test_source2.tsv', 'test_source3.tsv']:
@@ -43,61 +43,70 @@ def load_country_s2s3(test_dir, country_target):
         with open(fpath, 'r', encoding='utf-8') as f:
             header = f.readline().rstrip('\r\n').split('\t')
             id_idx = header.index('entity_id')
-            name_idx = header.index('business_name')
-            addr_idx = header.index('business_address')
+            name_idx_col = header.index('business_name')
+            addr_idx_col = header.index('business_address')
             cntry_idx = header.index('country')
             
             for line in f:
                 parts = line.rstrip('\r\n').split('\t')
-                if len(parts) <= max(id_idx, name_idx, addr_idx, cntry_idx):
+                if len(parts) <= max(id_idx, name_idx_col, addr_idx_col, cntry_idx):
                     continue
                 cntry = parts[cntry_idx].strip()
                 if cntry.lower() != target_lower:
                     continue
                 
                 eid = parts[id_idx].strip()
-                name_cl = clean_text(parts[name_idx])
-                addr_cl = clean_text(parts[addr_idx])
+                name_cl = clean_text(parts[name_idx_col])
+                addr_cl = clean_text(parts[addr_idx_col])
                 cntry_cl = clean_text(cntry)
                 
                 data[eid] = (name_cl, addr_cl, cntry_cl)
                 
-                # Inverted index on non-stopword tokens
-                tokens = set(name_cl.split()) - STOP_WORDS
-                for tok in tokens:
-                    if len(tok) >= 3:
-                        token_index[tok].append(eid)
+                # 1. Name tokens (len >= 2)
+                toks = set(name_cl.split()) - STOP_WORDS
+                for t in toks:
+                    if len(t) >= 2:
+                        name_idx[t].append(eid)
+                
+                # 2. Concatenated prefix (first 5 chars)
+                c_no_sp = name_cl.replace(' ', '')
+                if len(c_no_sp) >= 5:
+                    prefix_idx[c_no_sp[:5]].append(eid)
+                
+                # 3. Numeric address tokens (street/building numbers)
+                nums = re.findall(r'\b\d+\b', addr_cl)
+                for num in set(nums):
+                    if len(num) >= 2:
+                        addr_num_idx[num].append(eid)
     
-    # Prune ultra-frequent tokens (> 5000 occurrences) to avoid combinatorial explosion
-    pruned_index = {tok: eids for tok, eids in token_index.items() if len(eids) <= 5000}
-    return data, pruned_index
+    return data, name_idx, prefix_idx, addr_num_idx
 
 
-def process_country_s1(test_dir, country_target, s2s3_data, token_index, model, max_cands=15):
-    """Stream S1 entities for country, generate candidates, extract features and predict."""
+def process_country_s1(test_dir, country_target, s2s3_data, name_idx, prefix_idx, addr_num_idx, model, max_cands=20):
+    """Stream S1 entities for country, generate candidates, extract features, and predict."""
     target_lower = country_target.strip().lower()
     results = {}  # s1_id -> (candidate_ids_set, matched_ids_set)
     threshold = model.threshold
     
-    # Collect matching S1 rows
+    # Collect S1 rows for this country
     s1_rows = []
     with open(test_dir / 'test_source1.tsv', 'r', encoding='utf-8') as f:
         header = f.readline().rstrip('\r\n').split('\t')
         id_idx = header.index('entity_id')
-        name_idx = header.index('business_name')
-        addr_idx = header.index('business_address')
+        name_idx_col = header.index('business_name')
+        addr_idx_col = header.index('business_address')
         cntry_idx = header.index('country')
         
         for line in f:
             parts = line.rstrip('\r\n').split('\t')
-            if len(parts) <= max(id_idx, name_idx, addr_idx, cntry_idx):
+            if len(parts) <= max(id_idx, name_idx_col, addr_idx_col, cntry_idx):
                 continue
             cntry = parts[cntry_idx].strip()
             if cntry.lower() == target_lower:
                 s1_rows.append((
                     parts[id_idx].strip(),
-                    clean_text(parts[name_idx]),
-                    clean_text(parts[addr_idx]),
+                    clean_text(parts[name_idx_col]),
+                    clean_text(parts[addr_idx_col]),
                     clean_text(cntry)
                 ))
     
@@ -112,16 +121,36 @@ def process_country_s1(test_dir, country_target, s2s3_data, token_index, model, 
         batch_s1_cands = defaultdict(set)
         
         for s1_id, s1_name, s1_addr, s1_cntry in batch:
-            tokens = set(s1_name.split()) - STOP_WORDS
-            cand_counter = Counter()
-            for tok in tokens:
-                if len(tok) >= 3 and tok in token_index:
-                    for cid in token_index[tok]:
-                        cand_counter[cid] += 1
+            cand_scores = defaultdict(float)
             
-            # Select top candidate IDs
-            if cand_counter:
-                top_cands = [cid for cid, _ in cand_counter.most_common(max_cands)]
+            # 1. IDF-weighted name token retrieval
+            toks = set(s1_name.split()) - STOP_WORDS
+            for t in toks:
+                if len(t) >= 2 and t in name_idx:
+                    eids = name_idx[t]
+                    weight = 1.0 / (1.0 + math.log1p(len(eids)))
+                    for eid in eids:
+                        cand_scores[eid] += weight
+            
+            # 2. Concatenated prefix matching (catches .com and stripped spaces)
+            s1_no_sp = s1_name.replace(' ', '')
+            if len(s1_no_sp) >= 5 and s1_no_sp[:5] in prefix_idx:
+                for eid in prefix_idx[s1_no_sp[:5]]:
+                    cand_scores[eid] += 0.8
+            
+            # 3. Numeric address fallback if candidate count is low
+            if len(cand_scores) < 8:
+                nums = re.findall(r'\b\d+\b', s1_addr)
+                for num in set(nums):
+                    if len(num) >= 2 and num in addr_num_idx:
+                        a_eids = addr_num_idx[num]
+                        if len(a_eids) <= 300:
+                            for eid in a_eids:
+                                cand_scores[eid] += 0.4
+            
+            # Select top candidates
+            if cand_scores:
+                top_cands = [k for k, _ in sorted(cand_scores.items(), key=lambda x: x[1], reverse=True)[:max_cands]]
                 cand_set = set(top_cands)
                 batch_s1_cands[s1_id] = cand_set
                 
@@ -147,7 +176,7 @@ def process_country_s1(test_dir, country_target, s2s3_data, token_index, model, 
         for s1_id, _, _, _ in batch:
             cands = batch_s1_cands.get(s1_id, set())
             matches = matched_dict.get(s1_id, set())
-            # Integrity guarantee: matches must be subset of candidates
+            # Integrity check: matches must be subset of candidates
             matches = matches & cands
             results[s1_id] = (cands, matches)
             
@@ -161,9 +190,9 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = args.model_path or str(output_dir / "model.joblib")
     
-    print("=" * 50)
-    print("PREDICTION PIPELINE")
-    print("=" * 50)
+    print("=" * 60)
+    print("HIGH-PRECISION PREDICTION PIPELINE")
+    print("=" * 60)
     
     # 1. Load trained model
     print("\n[1] Loading trained model...")
@@ -171,7 +200,7 @@ def main():
     model.load(model_path)
     print(f"  Model threshold: {model.threshold:.2f}")
     
-    # 2. Get list of all S1 entity IDs from test_source1.tsv
+    # 2. Get list of all S1 entity IDs
     print("\n[2] Reading all test S1 IDs...")
     all_s1_ids = []
     with open(test_dir / "test_source1.tsv", 'r', encoding='utf-8') as f:
@@ -183,22 +212,21 @@ def main():
                 all_s1_ids.append(parts[id_idx].strip())
     print(f"  Total test S1 IDs: {len(all_s1_ids):,}")
     
-    # 3. Process country by country to keep memory bounded
+    # 3. Process country by country
     countries = ['France', 'US', 'India']
     all_results = {}
     
     for country in countries:
         print(f"\n[3] Processing Country: {country}...")
-        s2s3_data, token_index = load_country_s2s3(test_dir, country)
-        print(f"  Loaded {len(s2s3_data):,} S2/S3 entities and {len(token_index):,} blocking tokens for {country}")
+        s2s3_data, name_idx, prefix_idx, addr_num_idx = load_country_s2s3(test_dir, country)
+        print(f"  Loaded {len(s2s3_data):,} S2/S3 entities and {len(name_idx):,} name tokens for {country}")
         
         country_results = process_country_s1(
-            test_dir, country, s2s3_data, token_index, model, max_cands=args.max_candidates
+            test_dir, country, s2s3_data, name_idx, prefix_idx, addr_num_idx, model, max_cands=args.max_candidates
         )
         all_results.update(country_results)
         
-        # Clean up memory
-        del s2s3_data, token_index, country_results
+        del s2s3_data, name_idx, prefix_idx, addr_num_idx, country_results
         gc.collect()
     
     # 4. Save results to matching_results.tsv and candidate_pairs.tsv
