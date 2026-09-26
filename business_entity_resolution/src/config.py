@@ -6,7 +6,7 @@ Defines directory paths, hyperparameters, and operational constants.
 from pathlib import Path
 
 # Paths
-BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "dataset"
 TRAIN_DIR = DATA_DIR / "train"
 TEST_DIR = DATA_DIR / "test"

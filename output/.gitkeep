@@ -1,4 +1,0 @@
-# This file ensures output/ directory exists in git.
-# Submission outputs generated here:
-# - output/matching_results.tsv
-# - output/candidate_pairs.tsv

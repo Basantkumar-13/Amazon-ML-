@@ -1,1 +1,1 @@
-"""End-to-end pipeline coordination: training, evaluation, inference, and submission generation."""
+"""Pipeline scripts for training and prediction."""

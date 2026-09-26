@@ -1,1 +1,1 @@
-"""Feature extraction: string similarity metrics, token overlaps, and text representations."""
+from src.features.similarity import compute_features, FEATURE_NAMES

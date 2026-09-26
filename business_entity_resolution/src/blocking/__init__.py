@@ -1,1 +1,1 @@
-"""Candidate generation and blocking strategies to optimize recall ceiling and reduction ratio."""
+from src.blocking.blocker import block_by_country_and_tokens
