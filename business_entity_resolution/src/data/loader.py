@@ -3,14 +3,40 @@ import regex as re
 from pathlib import Path
 
 
+# Legal suffixes to normalize (map to standard form or remove)
+LEGAL_SUFFIXES = {
+    'pvt ltd': '', 'pvt limited': '', 'private limited': '', 'private ltd': '',
+    'limited': '', 'ltd': '', 'llp': '', 'llc': '', 'inc': '', 'corp': '',
+    'corporation': '', 'co': '', 'company': '', 'gmbh': '', 'ag': '',
+    'sarl': '', 'sas': '', 'sa': '', 'eurl': '', 'srl': '', 'spa': '',
+    'plc': '', 'pty': '', 'nv': '', 'bv': '', 'oy': '', 'ab': '',
+}
+
+# Domain suffixes to strip
+DOMAIN_SUFFIXES = re.compile(r'\b(\.com|\.in|\.co\.in|\.net|\.org|\.io|\.fr|\.us|\.co|\.biz|\.info)\b', re.IGNORECASE)
+
+
 def clean_text(text):
     if pd.isna(text):
         return ""
     text = str(text).lower().strip()
+    # remove domain suffixes (.com, .in, etc.)
+    text = DOMAIN_SUFFIXES.sub('', text)
     # remove extra spaces
     text = re.sub(r'\s+', ' ', text)
     # remove special chars but keep letters, numbers, spaces
     text = re.sub(r'[^\w\s]', '', text)
+    return text.strip()
+
+
+def clean_name_aggressive(text):
+    """Extra aggressive cleaning for name blocking — removes legal suffixes too."""
+    text = clean_text(text)
+    # Remove common legal suffixes
+    for suffix in sorted(LEGAL_SUFFIXES.keys(), key=len, reverse=True):
+        if text.endswith(' ' + suffix):
+            text = text[:-(len(suffix) + 1)].strip()
+            break
     return text
 
 

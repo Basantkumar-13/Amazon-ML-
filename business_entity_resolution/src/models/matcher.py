@@ -13,8 +13,13 @@ class MatcherModel:
     
     def train(self, X, y):
         X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=0.2, random_state=self.seed, stratify=y
+            X, y, test_size=0.15, random_state=self.seed, stratify=y
         )
+        
+        # Count class balance for scale_pos_weight
+        n_neg = int((y_train == 0).sum())
+        n_pos = int((y_train == 1).sum())
+        spw = n_neg / max(n_pos, 1)
         
         train_data = lgb.Dataset(X_train, label=y_train)
         val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
@@ -22,31 +27,36 @@ class MatcherModel:
         params = {
             'objective': 'binary',
             'metric': 'binary_logloss',
-            'learning_rate': 0.1,
-            'num_leaves': 31,
-            'max_depth': 6,
-            'min_child_samples': 20,
-            'feature_fraction': 0.8,
-            'bagging_fraction': 0.8,
+            'learning_rate': 0.05,
+            'num_leaves': 63,
+            'max_depth': 8,
+            'min_child_samples': 30,
+            'feature_fraction': 0.85,
+            'bagging_fraction': 0.85,
             'bagging_freq': 5,
+            'scale_pos_weight': spw,
+            'lambda_l1': 0.1,
+            'lambda_l2': 0.1,
             'verbose': -1,
-            'seed': self.seed
+            'seed': self.seed,
+            'n_jobs': -1,
         }
         
         callbacks = [
-            lgb.early_stopping(stopping_rounds=50),
+            lgb.early_stopping(stopping_rounds=100),
             lgb.log_evaluation(period=100)
         ]
         
         self.model = lgb.train(
             params,
             train_data,
-            num_boost_round=1000,
+            num_boost_round=2000,
             valid_sets=[val_data],
             callbacks=callbacks
         )
         
         print(f"Training done. Best iteration: {self.model.best_iteration}")
+        print(f"  Scale pos weight: {spw:.2f} (pos={n_pos:,}, neg={n_neg:,})")
         return self
     
     def predict(self, X):

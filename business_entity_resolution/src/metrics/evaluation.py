@@ -8,14 +8,7 @@ def f_beta_score(precision, recall, beta=0.5):
 
 
 def compute_macro_f05(ground_truth_dict, predictions_dict):
-    """
-    Compute macro-averaged F_0.5 score.
-    
-    ground_truth_dict: {s1_id: set of matched s2/s3 ids}
-    predictions_dict: {s1_id: set of predicted s2/s3 ids}
-    
-    F_0.5 weighs precision 2x more than recall.
-    """
+  
     all_s1_ids = set(ground_truth_dict.keys()) | set(predictions_dict.keys())
     
     scores = []
